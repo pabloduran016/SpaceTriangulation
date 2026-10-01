@@ -276,7 +276,7 @@ def main() -> None:
             i = event.ind[0]
             if i == state.selected_point:
                 state.selected_point = None
-            elif state.selection_mode == "none":
+            elif state.selection_mode is None or state.selection_mode == "none":
                 state.selected_point = i
             elif state.selection_mode == "tetrahedra":
                 if i in state.secondary_selection:
@@ -285,10 +285,11 @@ def main() -> None:
                     state.secondary_selection.append(i)
                 if len(state.secondary_selection) == 3:
                     tet = [state.selected_point, *state.secondary_selection]
+                    assert all(p is not None for p in tet)
                     tet2 = []
                     for j in range(state.tetrahedra.shape[0]):
                         t = list(state.tetrahedra[j, :])
-                        if all(p in tet for p in t):
+                        if tet is not None and all(p in tet for p in t):
                             tet = None
                             continue
                         tet2.append(t)
