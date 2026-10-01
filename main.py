@@ -232,8 +232,8 @@ def main() -> None:
     )
     filename = "triangulation.npz"
     d = np.load(filename)
-    for k in d.keys():
-        data[k] = d[k]
+    state.points = d["points"]
+    state.tetrahedra = d["tetrahedra"]
 
     def update_plot():
         """Refreshes the scatter collection and updates colors based on selection."""
