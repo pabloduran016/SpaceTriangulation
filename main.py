@@ -6,7 +6,8 @@ import matplotlib.text as mp_text
 import matplotlib.axes as mp_axes
 import matplotlib.figure as mp_figure
 from mpl_toolkits.mplot3d import art3d, Axes3D
-from typing import List, Optional as Op
+from typing import List, Literal, Optional as Op
+from dataclasses import dataclass
 
 FArray = npt.NDArray[np.float32]
 IArray = npt.NDArray[np.int32]
@@ -14,7 +15,7 @@ Ax = mp_axes.Axes
 Fig = mp_figure.Figure
 Text = mp_text.Text
 
-def calculate_normals(points: FArray, triangles: FArray) -> FArray:
+def calculate_normals(points: FArray, triangles: IArray) -> FArray:
     normals = np.zeros((triangles.shape[0], points.shape[1]), np.float32)
     for i in range(triangles.shape[0]):
         triangle = triangles[i, :]
@@ -43,7 +44,7 @@ def plot_points(
     *,
     selected_idx: Op[int],
     secondary_selection: List[int],
-    plot_id: bool,
+    draw_ids: bool,
 ) -> mp_coll.PathCollection:
     colors = [
         "purple" 
@@ -62,7 +63,7 @@ def plot_points(
         edgecolor="black",
         picker=5,
     )
-    if plot_id:
+    if draw_ids:
         for i in range(points.shape[0]):
             x, y, z = points[i]
             if i == selected_idx:
@@ -73,12 +74,12 @@ def plot_points(
 
 
 def plot_triangles(
-    points: FArray, triangles: IArray, normals: FArray, 
+    points: FArray, triangles: IArray,
     ax: Axes3D,
     *,
     draw_segment_vectors: bool,
     draw_normals: bool,
-    plot_id: bool,
+    draw_ids: bool,
 ) -> List[Text]:
     texts = []
     for i in range(triangles.shape[0]):
@@ -94,7 +95,7 @@ def plot_triangles(
                 )
         center = np.mean(points[triangle], axis=0)
         if draw_normals:
-            n = normals[i]
+            n = calculate_normals(points, triangles[i])[0]
             ax.quiver3D(
                 center[0], center[1], center[2],
                 n[0], n[1], n[2],
@@ -109,7 +110,7 @@ def plot_triangles(
                 alpha=0.1,
             )
         )
-        if plot_id:
+        if draw_ids:
             ax.text(center[0], center[1], center[2], f"t[{i}]")
     return texts
 
@@ -120,7 +121,7 @@ def calculate_vertices(points: FArray, tetrahedra: IArray) -> FArray:
         vertices[i] = np.mean(points[tetrahedra[i], :], axis=0)
     return vertices
 
-def calculate_edges(triangles: IArray, tetrahedra: IArray) -> IArray:
+def calculate_edges(tetrahedra: IArray) -> IArray:
     edges = []
     for i in range(tetrahedra.shape[0]):
         tet_i = tetrahedra[i, :]
@@ -128,15 +129,15 @@ def calculate_edges(triangles: IArray, tetrahedra: IArray) -> IArray:
             if j >= i:
                 continue
             tet_j = tetrahedra[j, :]
-            for k in range(triangles.shape[0]):
-                if all(p in tet_i for p in triangles[k]) and all(p in tet_j for p in triangles[k]):
-                    edges.append([i, j])
+            num_common = sum(p in tet_i for p in tet_j)
+            if num_common == 3:
+                edges.append([j, i])
     return np.array(edges)
 
 def plot_vertices(
     vertices: FArray, ax: Axes3D,
     *,
-    plot_id: bool,
+    draw_ids: bool,
 ) -> None:
     for i in range(vertices.shape[0]):
         x, y, z = vertices[i]
@@ -149,7 +150,7 @@ def plot_vertices(
             edgecolor="black",
             picker=5,
         )
-        if plot_id:
+        if draw_ids:
             ax.text(x, y, z, f"v[{i}]")
 
 def plot_edges(vertices: FArray, edges: IArray, ax: Axes3D) -> None:
@@ -162,6 +163,48 @@ def plot_edges(vertices: FArray, edges: IArray, ax: Axes3D) -> None:
             alpha=0.5,
         )
 
+
+@dataclass
+class State:
+    points: FArray
+    tetrahedra: IArray
+    selected_point: Op[int]
+    secondary_selection: List[int]
+    selection_mode: Literal["none", "tetrahedra"]
+    scatter_collection: Op[mp_coll.PathCollection]
+    draw_ids: bool
+    draw_normals: bool
+    draw_segment_vectors: bool
+
+    def calculate_triangles(self) -> IArray:
+        triangles = []
+        for i in range(self.tetrahedra.shape[0]):
+            tet = self.tetrahedra[i, :]
+            t1 = sorted(tuple(tet[[0, 1, 2]]))
+            t2 = sorted(tuple(tet[[0, 2, 3]]))
+            t3 = sorted(tuple(tet[[0, 3, 1]]))
+            t4 = sorted(tuple(tet[[1, 3, 2]]))
+            for t in (t1, t2, t3, t4):
+                if t not in triangles:
+                    triangles.append(t)
+        return np.array([list(t) for t in triangles])
+
+    def calculate_segments(self) -> IArray:
+        segments = []
+        for i in range(self.tetrahedra.shape[0]):
+            tet = self.tetrahedra[i, :]
+            segs = [
+                sorted(tuple(tet[[i, j]]))
+                for i in range(tet.shape[0])
+                for j in range(tet.shape[0])
+                if i < j
+            ]
+            for s in segs:
+                if s not in segments:
+                    segments.append(s)
+        return np.array([list(seg) for seg in segments])
+
+
 def main() -> None:
     points = np.array([  # List of (x, y, z) coords
         [0, 0, 1],
@@ -171,50 +214,22 @@ def main() -> None:
 
         [-1.5, 0, 1],
     ])
-    # points -= np.mean(points, axis=0)
-
-    segments = np.array([  # List of (initial, final) indices in points
-        [0, 1],
-        [0, 2],
-        [0, 3],
-        [1, 2],
-        [1, 3],
-        [2, 3],
-
-        [0, 4],
-        [2, 4],
-        [3, 4],
-    ])
-    triangles = np.array([  # List of (p1, p2, p3) indices in points
-        [0, 1, 2],
-        [0, 2, 3],
-        [0, 3, 1],
-        [1, 3, 2],
-
-        [0, 2, 4],
-        [0, 4, 3],
-        [2, 3, 4],
-    ])
-
     tetrahedra = np.array([  # List of (p1, p2, p3, p4) indices in points
         [0, 1, 2, 3],
         [0, 2, 3, 4],
     ])
 
-    # vertices = calculate_vertices(points, tetrahedra)
-    # edges = calculate_edges(points, triangles, tetrahedra)
-
-    data = {
-        "points": points,
-        "segments": segments,
-        "triangles": triangles,
-        "tetrahedra": tetrahedra,
-        "selected_idx": None,
-        "secondary_selection": [],
-        "scatter": [],
-        "selection_mode": "none",
-        "plot_id": False,
-    }
+    state = State(
+        points=points,
+        tetrahedra=tetrahedra,
+        selected_point=None,
+        secondary_selection=[],
+        selection_mode="none",
+        scatter_collection=None,
+        draw_ids=False,
+        draw_normals=False,
+        draw_segment_vectors=False,
+    )
     filename = "triangulation.npz"
     d = np.load(filename)
     for k in d.keys():
@@ -233,141 +248,84 @@ def main() -> None:
         ax.set_zlabel("z")
         
         # Highlight the selected point in red, others in blue
-        vertices = calculate_vertices(data["points"], data["tetrahedra"])
-        edges = calculate_edges(data["triangles"], data["tetrahedra"])
+        vertices = calculate_vertices(state.points, state.tetrahedra)
+        edges = calculate_edges(state.tetrahedra)
                 
         plot_edges(vertices, edges, ax)
-        plot_vertices(vertices, ax, plot_id=data["plot_id"])
-        normals = calculate_normals(data["points"], data["triangles"])
+        plot_vertices(vertices, ax, draw_ids=state.draw_ids)
         plot_triangles(
-            data["points"], data["triangles"], normals, ax,
-            draw_segment_vectors=False,
-            draw_normals=False,
-            plot_id=data["plot_id"],
+            state.points, state.calculate_triangles(), ax,
+            draw_segment_vectors=state.draw_segment_vectors,
+            draw_normals=state.draw_normals,
+            draw_ids=state.draw_ids,
         )
-        plot_segments(data["points"], data["segments"], ax)
-        data["scatter"] = plot_points(
-            data["points"], ax,
-            selected_idx=data["selected_idx"],
-            secondary_selection=data["secondary_selection"],
-            plot_id=data["plot_id"],
+        plot_segments(state.points, state.calculate_segments(), ax)
+        state.scatter_collection = plot_points(
+            state.points, ax,
+            selected_idx=state.selected_point,
+            secondary_selection=state.secondary_selection,
+            draw_ids=state.draw_ids,
         )
 
-        ax.text2D(0.05, 0.95, f"Selection Mode: {data['selection_mode']}", transform=ax.transAxes)
+        ax.text2D(0.05, 0.95, f"Selection Mode: {state.selection_mode}", transform=ax.transAxes)
         fig.canvas.draw_idle()
 
     def on_pick(event):
         """Triggered when clicking on an existing point."""
-        if event.artist == data["scatter"]:
+        if event.artist == state.scatter_collection:
             i = event.ind[0]
-            if data["selection_mode"] == "segment" and data["selected_idx"] is not None and data["selected_idx"] != i:
-                s = tuple(sorted([data["selected_idx"], i]))
-                segments2 = []
-                for j in range(data["segments"].shape[0]):
-                    seg = tuple(data["segments"][j, :])
-                    if np.all(seg == s):
-                        s = None
-                        continue
-                    segments2.append(seg)
-                if s is not None:
-                    segments2.append(s)
-                data["segments"] = np.array([[p0, p1] for p0, p1 in segments2])
-            elif data["selection_mode"] == "triangle" and data["selected_idx"] is not None and data["selected_idx"] != i:
-                if i in data["secondary_selection"]:
-                    data["secondary_selection"].remove(i)
-                if len(data["secondary_selection"]) < 2:
-                    data["secondary_selection"].append(i)
-                if len(data["secondary_selection"]) == 2:
-                    triangle = [data["selected_idx"], *data["secondary_selection"]]
-                    triangles2 = []
-                    for j in range(data["triangles"].shape[0]):
-                        tri = list(data["triangles"][j, :])
-                        if all(p in triangle for p in tri):
-                            triangle = None
-                            continue
-                        triangles2.append(tri)
-                    if triangle is not None:
-                        triangles2.append(triangle)
-                    data["triangles"] = np.array([[p0, p1, p2] for p0, p1, p2 in triangles2])
-                    data["secondary_selection"] = []
-            elif data["selection_mode"] == "tetrahedra" and data["selected_idx"] is not None and data["selected_idx"] != i:
-                if i in data["secondary_selection"]:
-                    data["secondary_selection"].remove(i)
-                if len(data["secondary_selection"]) < 3:
-                    data["secondary_selection"].append(i)
-                if len(data["secondary_selection"]) == 3:
-                    tet = [data["selected_idx"], *data["secondary_selection"]]
+            if i == state.selected_point:
+                state.selected_point = None
+            elif state.selection_mode == "none":
+                state.selected_point = i
+            elif state.selection_mode == "tetrahedra":
+                if i in state.secondary_selection:
+                    state.secondary_selection.remove(i)
+                if len(state.secondary_selection) < 3:
+                    state.secondary_selection.append(i)
+                if len(state.secondary_selection) == 3:
+                    tet = [state.selected_point, *state.secondary_selection]
                     tet2 = []
-                    for j in range(data["tetrahedra"].shape[0]):
-                        t = list(data["tetrahedra"][j, :])
+                    for j in range(state.tetrahedra.shape[0]):
+                        t = list(state.tetrahedra[j, :])
                         if all(p in tet for p in t):
                             tet = None
                             continue
                         tet2.append(t)
                     if tet is not None:
                         tet2.append(tet)
-                    data["tetrahedra"] = np.array([[p0, p1, p2, p3] for p0, p1, p2, p3 in tet2])
-                    data["secondary_selection"] = []
+                    state.tetrahedra = np.array([[p0, p1, p2, p3] for p0, p1, p2, p3 in tet2])
+                    state.secondary_selection = []
             else:
-                if i == data["selected_idx"]:
-                    data["selected_idx"] = None
-                else:
-                    data["selected_idx"] = i
+                assert False, "Unreachable"
         update_plot()
-
-    def on_click(event):
-        """Triggered when clicking the background. Adds a new point at click depth projection."""
-        # # Only act if it's a left click, inside the axes, and we didn't just pick a point
-        # if event.button == 1 and event.inaxes == ax and ax.button_pressed == 1:
-        #     # Check if we clicked empty space (ignores clicks meant for panning/rotating)
-        #     if fig.canvas.widgetlock.locked(): 
-        #         return
-        #     
-        #     # Approximate 3D position based on click projection midpoint
-        #     if event.xdata is not None and event.ydata is not None:
-        #         # Check if we are selecting an existing point first
-        #         # If not, we add a point at the center of the Z-depth range
-        #         z_mid = (ax.get_zlim()[0] + ax.get_zlim()[1]) / 2
-        #         p = np.array([[event.xdata, event.ydata, z_mid]])
-        #         data["points"] = np.concatenate([data["points"], p])
-        #         data["selected_idx"] = data["points"].shape[0] - 1
-        #         update_plot()
 
     def on_key(event):
         """Moves the selected point using Arrow Keys."""
         if event.key == 'A':  # Add point
             p = np.array([[0, 0, 0]])
-            data["points"] = np.concatenate([data["points"], p])
-            data["selected_idx"] = data["points"].shape[0] - 1
+            state.points = np.concatenate([state.points, p])
+            state.selected_point = state.points.shape[0] - 1
         elif event.key == 'esc':
-            data["selection_mode"] = "none"
-        elif event.key == 'S':
-            data["selection_mode"] = "segment" if data["selection_mode"] != "segment" else "none"
-            data["secondary_selection"] = []
+            state.selection_mode = "none"
         elif event.key == 'T':
-            data["selection_mode"] = "triangle" if data["selection_mode"] != "triangle" else "none"
-            data["secondary_selection"] = []
-        elif event.key == 'V':
-            data["selection_mode"] = "tetrahedra" if data["selection_mode"] != "tetrahedra" else "none"
-            data["secondary_selection"] = []
-        elif event.key == 'N':
-            data["plot_id"] = not data["plot_id"]
-        elif event.key == 'G':  # Toggle segment mode
+            state.selection_mode = "tetrahedra" if state.selection_mode != "tetrahedra" else "none"
+            state.secondary_selection = []
+        elif event.key == 'I':
+            state.draw_ids = not state.draw_ids
+        elif event.key == 'G':
             np.savez(
                 filename,
-                points=data["points"],
-                segments=data["segments"],
-                triangles=data["triangles"],
-                tetrahedra=data["tetrahedra"],
+                points=state.points,
+                tetrahedra=state.tetrahedra,
             )
             print(f"Saved triangulation to file: {filename}")
         elif event.key == 'L':  # Toggle segment mode
             d = np.load(filename)
-            for k in d.keys():
-                data[k] = d[k]
-
+            state.points = d["points"]
+            state.tetrahedra = d["tetrahedra"]
         
-        if data["selected_idx"] is not None:
+        if state.selected_point is not None:
             step = 0.1  # Movement speed increments
             dx = dy = dz = 0
             if event.key == 'left':
@@ -382,7 +340,7 @@ def main() -> None:
                 dz += step
             elif event.key == 'shift+down':
                 dz -= step
-            data["points"][data["selected_idx"], :] += [dx, dy, dz]
+            state.points[state.selected_point, :] += [dx, dy, dz]
 
         update_plot()
 
@@ -392,7 +350,7 @@ def main() -> None:
     update_plot()
     # Connect the interactive event managers
     fig.canvas.mpl_connect('pick_event', on_pick)
-    fig.canvas.mpl_connect('button_press_event', on_click)
+    # fig.canvas.mpl_connect('button_press_event', on_click)
     fig.canvas.mpl_connect('key_press_event', on_key)
 
     plt.show()
