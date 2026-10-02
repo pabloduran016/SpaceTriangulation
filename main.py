@@ -185,7 +185,7 @@ def calculate_boundary_graph(
             nodes.append(i)
     for i in range(edges.shape[0]):
         ed = edges[i]
-        if ed[0] in nodes and ed[1] in nodes:
+        if ed[0] in nodes or ed[1] in nodes:
             links.append(i)
     return np.array(nodes), np.array(links)
 
@@ -277,56 +277,17 @@ class State:
 
 
 def main() -> None:
-    # points0 = np.array([  # List of (x, y, z) coords
-    #     [0, 0, 1],
-    #     [1, 0, 0],
-    #     [-1/2, np.sqrt(3)/2, 0],
-    #     [-1/2, -np.sqrt(3)/2, 0],
-    #
-    #     [-1.5, 0, 1],
-    # ])
-    # tetrahedra0 = np.array([  # List of (p1, p2, p3, p4) indices in points
-    #     [0, 1, 2, 3],
-    #     [0, 2, 3, 4],
-    # ])
-    points0 = np.array([
-        [-1, -1, -1],
-        [ 0, -1, -1],
-        [ 1, -1, -1],
+    points0 = np.array([  # List of (x, y, z) coords
+        [0, 0, 1],
+        [1, 0, 0],
+        [-1/2, np.sqrt(3)/2, 0],
+        [-1/2, -np.sqrt(3)/2, 0],
 
-        [-1,  0, -1],
-        [ 0,  0, -1],
-        [ 1,  0, -1],
-        
-        [-1,  1, -1],
-        [ 0,  1, -1],
-        [ 1,  1, -1],
-
-        [-1, -1,  0],
-        [ 0, -1,  0],
-        [ 1, -1,  0],
-
-        [-1,  0,  0],
-        [ 0,  0,  0],
-        [ 1,  0,  0],
-        
-        [-1,  1,  0],
-        [ 0,  1,  0],
-        [ 1,  1,  0],
-
-        [-1, -1,  1],
-        [ 0, -1,  1],
-        [ 1, -1,  1],
-
-        [-1,  0,  1],
-        [ 0,  0,  1],
-        [ 1,  0,  1],
-        
-        [-1,  1,  1],
-        [ 0,  1,  1],
-        [ 1,  1,  1],
+        [-1.5, 0, 1],
     ])
-    tetrahedra0 = np.array([
+    tetrahedra0 = np.array([  # List of (p1, p2, p3, p4) indices in points
+        [0, 1, 2, 3],
+        [0, 2, 3, 4],
     ])
 
     state = State(
@@ -454,7 +415,7 @@ def main() -> None:
                 tetrahedra=state.tetrahedra,
             )
             print(f"Saved triangulation to file: {filename}")
-        elif event.key == 'L':  # Toggle segment mode
+        elif event.key == 'L':
             d = np.load(filename)
             state.points = d["points"]
             state.tetrahedra = d["tetrahedra"]
