@@ -6,8 +6,9 @@ import matplotlib.text as mp_text
 import matplotlib.axes as mp_axes
 import matplotlib.figure as mp_figure
 from mpl_toolkits.mplot3d import art3d, Axes3D
-from typing import List, Literal, Optional as Op
+from typing import List, Literal, Optional as Op, Tuple
 from dataclasses import dataclass
+import sys
 
 FArray = npt.NDArray[np.float32]
 IArray = npt.NDArray[np.int32]
@@ -45,15 +46,26 @@ def plot_points(
     selected_idx: Op[int],
     secondary_selection: List[int],
     draw_ids: bool,
+    nodes: IArray,
+    tetrahedra: IArray,
 ) -> mp_coll.PathCollection:
+    boundary = []
+    # for i in range(points.shape[0]):
+    #     for j in range(tetrahedra.shape[0]):
+    #         if i in tetrahedra[j] and j in nodes:
+    #             boundary.append(i)
+
     colors = [
         "purple" 
         if i in secondary_selection else
-        "blue"
+        "orange"
         if i == selected_idx else 
         "red"
+        # if i in boundary else
+        # "grey"
         for i in range(points.shape[0])
     ]
+
 
     scatter = ax.scatter(
         points[:, 0], points[:, 1], points[:, 2],  # pyright: ignore[reportArgumentType]
@@ -80,8 +92,17 @@ def plot_triangles(
     draw_segment_vectors: bool,
     draw_normals: bool,
     draw_ids: bool,
+    nodes: IArray,
+    tetrahedra: IArray
 ) -> List[Text]:
     texts = []
+    boundary = []
+    for i in range(triangles.shape[0]):
+        for j in range(tetrahedra.shape[0]):
+            if all(p in tetrahedra[j, :] for p in triangles[i, :]) and j in nodes:
+                boundary.append(i)
+                break
+        
     for i in range(triangles.shape[0]):
         triangle = triangles[i, :]
         if draw_segment_vectors:
@@ -103,23 +124,27 @@ def plot_triangles(
                 linewidth=0.5,
                 arrow_length_ratio=0.1,
             )
-        ax.add_collection(
-            art3d.Poly3DCollection(
-                [points[triangle]],
-                facecolor="yellow",
-                alpha=0.1,
+        if i in boundary:
+            ax.add_collection(
+                art3d.Poly3DCollection(
+                    [points[triangle]],
+                    facecolor="yellow",
+                    alpha=0.08,
+                )
             )
-        )
         if draw_ids:
             ax.text(center[0], center[1], center[2], f"t[{i}]")
     return texts
 
-
-def calculate_vertices(points: FArray, tetrahedra: IArray) -> FArray:
-    vertices = np.zeros((tetrahedra.shape[0], points.shape[1]), np.float32)  # List of (x, y, z) coordinates
+def calculate_vertices(
+    points: FArray,
+    tetrahedra: IArray,
+) -> FArray:
+    vertices = []
     for i in range(tetrahedra.shape[0]):
-        vertices[i] = np.mean(points[tetrahedra[i], :], axis=0)
-    return vertices
+        v = np.mean(points[tetrahedra[i], :], axis=0)
+        vertices.append(v)
+    return np.array(vertices)
 
 def calculate_edges(tetrahedra: IArray) -> IArray:
     edges = []
@@ -134,14 +159,49 @@ def calculate_edges(tetrahedra: IArray) -> IArray:
                 edges.append([j, i])
     return np.array(edges)
 
+def calculate_boundary_graph(
+    edges: IArray,
+    tetrahedra: IArray,
+) -> Tuple[IArray, IArray]:
+    nodes = []
+    links = []
+    for i in range(tetrahedra.shape[0]):
+        tet = tetrahedra[i, :]
+        t1 = sorted(tuple(tet[[0, 1, 2]]))
+        t2 = sorted(tuple(tet[[0, 2, 3]]))
+        t3 = sorted(tuple(tet[[0, 3, 1]]))
+        t4 = sorted(tuple(tet[[1, 3, 2]]))
+        boundary = 4
+        for t in (t1, t2, t3, t4):
+            for j in range(tetrahedra.shape[0]):
+                if i == j:
+                    continue
+                tet_j = tetrahedra[j, :]
+                if all(p in tet_j for p in t):
+                    boundary -= 1
+                    break
+        assert boundary >= 0
+        if boundary > 0:
+            nodes.append(i)
+    for i in range(edges.shape[0]):
+        ed = edges[i]
+        if ed[0] in nodes and ed[1] in nodes:
+            links.append(i)
+    return np.array(nodes), np.array(links)
+
+
 def plot_vertices(
     vertices: FArray, ax: Axes3D,
     *,
+    nodes: IArray,
     draw_ids: bool,
 ) -> None:
     for i in range(vertices.shape[0]):
         x, y, z = vertices[i]
-        color = "green"
+        if i in nodes:
+            color = (.3, .3, 1)
+        else:
+            color = "green"
         ax.scatter(
             x, y, z,
             marker=".",
@@ -153,13 +213,23 @@ def plot_vertices(
         if draw_ids:
             ax.text(x, y, z, f"v[{i}]")
 
-def plot_edges(vertices: FArray, edges: IArray, ax: Axes3D) -> None:
+def plot_edges(
+    vertices: FArray,
+    edges: IArray,
+    ax: Axes3D,
+    *,
+    links: IArray,
+) -> None:
     for i in range(edges.shape[0]):
         s = edges[i]
+        if i in links:
+            color = "green"
+        else:
+            color = "blue"
         ax.plot3D(
             vertices[s, 0], vertices[s, 1], vertices[s, 2], 
             linewidth=1,
-            color="blue",
+            color=color,
             alpha=0.5,
         )
 
@@ -175,6 +245,7 @@ class State:
     draw_ids: bool
     draw_normals: bool
     draw_segment_vectors: bool
+    view_mode: Literal["all", "triangulation", "dual"]
 
     def calculate_triangles(self) -> IArray:
         triangles = []
@@ -206,22 +277,61 @@ class State:
 
 
 def main() -> None:
-    points = np.array([  # List of (x, y, z) coords
-        [0, 0, 1],
-        [1, 0, 0],
-        [-1/2, np.sqrt(3)/2, 0],
-        [-1/2, -np.sqrt(3)/2, 0],
+    # points0 = np.array([  # List of (x, y, z) coords
+    #     [0, 0, 1],
+    #     [1, 0, 0],
+    #     [-1/2, np.sqrt(3)/2, 0],
+    #     [-1/2, -np.sqrt(3)/2, 0],
+    #
+    #     [-1.5, 0, 1],
+    # ])
+    # tetrahedra0 = np.array([  # List of (p1, p2, p3, p4) indices in points
+    #     [0, 1, 2, 3],
+    #     [0, 2, 3, 4],
+    # ])
+    points0 = np.array([
+        [-1, -1, -1],
+        [ 0, -1, -1],
+        [ 1, -1, -1],
 
-        [-1.5, 0, 1],
+        [-1,  0, -1],
+        [ 0,  0, -1],
+        [ 1,  0, -1],
+        
+        [-1,  1, -1],
+        [ 0,  1, -1],
+        [ 1,  1, -1],
+
+        [-1, -1,  0],
+        [ 0, -1,  0],
+        [ 1, -1,  0],
+
+        [-1,  0,  0],
+        [ 0,  0,  0],
+        [ 1,  0,  0],
+        
+        [-1,  1,  0],
+        [ 0,  1,  0],
+        [ 1,  1,  0],
+
+        [-1, -1,  1],
+        [ 0, -1,  1],
+        [ 1, -1,  1],
+
+        [-1,  0,  1],
+        [ 0,  0,  1],
+        [ 1,  0,  1],
+        
+        [-1,  1,  1],
+        [ 0,  1,  1],
+        [ 1,  1,  1],
     ])
-    tetrahedra = np.array([  # List of (p1, p2, p3, p4) indices in points
-        [0, 1, 2, 3],
-        [0, 2, 3, 4],
+    tetrahedra0 = np.array([
     ])
 
     state = State(
-        points=points,
-        tetrahedra=tetrahedra,
+        points=points0,
+        tetrahedra=tetrahedra0,
         selected_point=None,
         secondary_selection=[],
         selection_mode="none",
@@ -229,11 +339,16 @@ def main() -> None:
         draw_ids=False,
         draw_normals=False,
         draw_segment_vectors=False,
+        view_mode="all",
     )
-    filename = "triangulation.npz"
-    d = np.load(filename)
-    state.points = d["points"]
-    state.tetrahedra = d["tetrahedra"]
+    try:
+        filename = sys.argv[1]
+        print(f"Using filename: {filename}")
+        d = np.load(filename)
+        state.points = d["points"]
+        state.tetrahedra = d["tetrahedra"]
+    except IndexError:
+        filename = "triangulation.npz"
 
     def update_plot():
         """Refreshes the scatter collection and updates colors based on selection."""
@@ -250,22 +365,30 @@ def main() -> None:
         # Highlight the selected point in red, others in blue
         vertices = calculate_vertices(state.points, state.tetrahedra)
         edges = calculate_edges(state.tetrahedra)
+        nodes, links = calculate_boundary_graph(edges, state.tetrahedra)
                 
-        plot_edges(vertices, edges, ax)
-        plot_vertices(vertices, ax, draw_ids=state.draw_ids)
-        plot_triangles(
-            state.points, state.calculate_triangles(), ax,
-            draw_segment_vectors=state.draw_segment_vectors,
-            draw_normals=state.draw_normals,
-            draw_ids=state.draw_ids,
-        )
-        plot_segments(state.points, state.calculate_segments(), ax)
-        state.scatter_collection = plot_points(
-            state.points, ax,
-            selected_idx=state.selected_point,
-            secondary_selection=state.secondary_selection,
-            draw_ids=state.draw_ids,
-        )
+        if state.view_mode in ("all", "dual"):
+            plot_edges(vertices, edges, ax, links=links)
+            plot_vertices(vertices, ax, nodes=nodes, draw_ids=state.draw_ids)
+
+        if state.view_mode in ("all", "triangulation"):
+            plot_triangles(
+                state.points, state.calculate_triangles(), ax,
+                draw_segment_vectors=state.draw_segment_vectors,
+                draw_normals=state.draw_normals,
+                draw_ids=state.draw_ids,
+                nodes=nodes,
+                tetrahedra=state.tetrahedra,
+            )
+            plot_segments(state.points, state.calculate_segments(), ax)
+            state.scatter_collection = plot_points(
+                state.points, ax,
+                selected_idx=state.selected_point,
+                secondary_selection=state.secondary_selection,
+                draw_ids=state.draw_ids,
+                nodes=nodes,
+                tetrahedra=state.tetrahedra,
+            )
 
         ax.text2D(0.05, 0.95, f"Selection Mode: {state.selection_mode}", transform=ax.transAxes)
         fig.canvas.draw_idle()
@@ -276,16 +399,19 @@ def main() -> None:
             i = event.ind[0]
             if i == state.selected_point:
                 state.selected_point = None
-            elif state.selection_mode is None or state.selection_mode == "none":
+            elif state.selected_point is None or state.selection_mode == "none":
                 state.selected_point = i
             elif state.selection_mode == "tetrahedra":
                 if i in state.secondary_selection:
                     state.secondary_selection.remove(i)
-                if len(state.secondary_selection) < 3:
+                elif len(state.secondary_selection) < 3:
                     state.secondary_selection.append(i)
+                else:
+                    assert False, "Unreachable"
+
                 if len(state.secondary_selection) == 3:
                     tet = [state.selected_point, *state.secondary_selection]
-                    assert all(p is not None for p in tet)
+                    assert all(p is not None for p in tet), tet
                     tet2 = []
                     for j in range(state.tetrahedra.shape[0]):
                         t = list(state.tetrahedra[j, :])
@@ -307,13 +433,20 @@ def main() -> None:
             p = np.array([[0, 0, 0]])
             state.points = np.concatenate([state.points, p])
             state.selected_point = state.points.shape[0] - 1
-        elif event.key == 'esc':
-            state.selection_mode = "none"
         elif event.key == 'T':
             state.selection_mode = "tetrahedra" if state.selection_mode != "tetrahedra" else "none"
             state.secondary_selection = []
         elif event.key == 'I':
             state.draw_ids = not state.draw_ids
+        elif event.key == 'V':
+            if state.view_mode == "all":
+                state.view_mode = "dual"
+            elif state.view_mode == "dual":
+                state.view_mode = "triangulation"
+            elif state.view_mode == "triangulation":
+                state.view_mode = "all"
+            else:
+                assert False, "Unreachable"
         elif event.key == 'G':
             np.savez(
                 filename,
