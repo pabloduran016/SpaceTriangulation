@@ -2,7 +2,7 @@
 
 Triangulate Space!!
 
-![Example](usage.png)
+![Unit Cell](unit_cell.png)
 
 ## Example
 
@@ -14,7 +14,7 @@ Triangulate Space!!
 ## Controls
 
 - `T`: Toggle tetrahedron mode. Select 3 point + selected point to create a tetrahedron
-- `V`: Toggle visualization from: all, triangulation, dual
+- `V`: Toggle visualization from: all, triangulation, dual, boundary
 - `A`: Add a point in the center
 - Left, Right arrows: move in `x` axis
 - Up, Down arrows: move in `y` axis
