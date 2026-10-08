@@ -9,6 +9,7 @@ from mpl_toolkits.mplot3d import art3d, Axes3D
 from typing import List, Literal, Optional as Op, Tuple
 from dataclasses import dataclass
 import sys
+import os
 
 FArray = npt.NDArray[np.float32]
 IArray = npt.NDArray[np.int32]
@@ -30,13 +31,30 @@ def calculate_normals(points: FArray, triangles: IArray) -> FArray:
         assert np.all([abs(np.dot(n, vs[i])) < 1e-10 for i in range(vs.shape[0])])
     return normals
 
-def plot_segments(points: FArray, segments: IArray, ax: Axes3D) -> None:
+def plot_segments(
+    points: FArray, segments: IArray, ax: Axes3D,
+    *,
+    boundary_triangles: IArray,
+    draw_only_boundary: bool,
+) -> None:
     for i in range(segments.shape[0]):
         s = segments[i]
+        boundary = False
+        for j in range(boundary_triangles.shape[0]):
+            t = boundary_triangles[j]
+            if all(p in t for p in s):
+                boundary = True
+                break
+        if boundary:
+            color = "black"
+        else:
+            if draw_only_boundary:
+                continue
+            color = "grey"
         ax.plot3D(
             points[s, 0], points[s, 1], points[s, 2], 
             linewidth=1,
-            color="black",
+            color=color,
             alpha=0.5,
         )
 
@@ -46,29 +64,27 @@ def plot_points(
     selected_idx: Op[int],
     secondary_selection: List[int],
     draw_ids: bool,
-    nodes: IArray,
-    tetrahedra: IArray,
+    boundary_triangles: IArray,
+    draw_only_boundary: bool,
 ) -> mp_coll.PathCollection:
-    boundary = []
-    # for i in range(points.shape[0]):
-    #     for j in range(tetrahedra.shape[0]):
-    #         if i in tetrahedra[j] and j in nodes:
-    #             boundary.append(i)
-
-    colors = [
-        "purple" 
-        if i in secondary_selection else
-        "orange"
-        if i == selected_idx else 
-        "red"
-        # if i in boundary else
-        # "grey"
-        for i in range(points.shape[0])
-    ]
-
+    colors = []
+    plot_points = []
+    for i in range(points.shape[0]):
+        if i in boundary_triangles:
+            colors.append((1, 0, 0, 0.8))
+        else:
+            if draw_only_boundary:
+                continue
+            elif i in secondary_selection:
+                colors.append((1, 0, 1, 1))
+            elif i == selected_idx:
+                colors.append((1, .5, 0, 1))
+            else:
+                colors.append((.5, .5, .5, 0.5))
+        plot_points.append(i)
 
     scatter = ax.scatter(
-        points[:, 0], points[:, 1], points[:, 2],  # pyright: ignore[reportArgumentType]
+        points[plot_points, 0], points[plot_points, 1], points[plot_points, 2],  # pyright: ignore[reportArgumentType]
         marker=".",
         s=100,
         facecolor=colors,
@@ -92,19 +108,14 @@ def plot_triangles(
     draw_segment_vectors: bool,
     draw_normals: bool,
     draw_ids: bool,
-    nodes: IArray,
-    tetrahedra: IArray
+    boundary_triangles: IArray,
+    draw_only_boundary: bool,
 ) -> List[Text]:
     texts = []
-    boundary = []
-    for i in range(triangles.shape[0]):
-        for j in range(tetrahedra.shape[0]):
-            if all(p in tetrahedra[j, :] for p in triangles[i, :]) and j in nodes:
-                boundary.append(i)
-                break
-        
     for i in range(triangles.shape[0]):
         triangle = triangles[i, :]
+        if draw_only_boundary and triangle not in boundary_triangles:
+            continue
         if draw_segment_vectors:
             for j in range(triangle.shape[0]):
                 p0 = points[triangle[j]]
@@ -124,14 +135,13 @@ def plot_triangles(
                 linewidth=0.5,
                 arrow_length_ratio=0.1,
             )
-        if i in boundary:
-            ax.add_collection(
-                art3d.Poly3DCollection(
-                    [points[triangle]],
-                    facecolor="yellow",
-                    alpha=0.08,
-                )
+        ax.add_collection(
+            art3d.Poly3DCollection(
+                [points[triangle]],
+                facecolor="yellow",
+                alpha=0.08,
             )
+        )
         if draw_ids:
             ax.text(center[0], center[1], center[2], f"t[{i}]")
     return texts
@@ -160,34 +170,52 @@ def calculate_edges(tetrahedra: IArray) -> IArray:
     return np.array(edges)
 
 def calculate_boundary_graph(
-    edges: IArray,
+    points: FArray,
+    vertices0: FArray,
+    edges0: IArray,
     tetrahedra: IArray,
-) -> Tuple[IArray, IArray]:
+) -> Tuple[IArray, FArray, IArray, IArray, IArray]:
     nodes = []
     links = []
+    vertices = vertices0.tolist()
+    edges = edges0.tolist()
+    boundary_triangles = []
     for i in range(tetrahedra.shape[0]):
         tet = tetrahedra[i, :]
         t1 = sorted(tuple(tet[[0, 1, 2]]))
         t2 = sorted(tuple(tet[[0, 2, 3]]))
         t3 = sorted(tuple(tet[[0, 3, 1]]))
         t4 = sorted(tuple(tet[[1, 3, 2]]))
-        boundary = 4
         for t in (t1, t2, t3, t4):
+            has_neighbour = False
             for j in range(tetrahedra.shape[0]):
                 if i == j:
                     continue
                 tet_j = tetrahedra[j, :]
                 if all(p in tet_j for p in t):
-                    boundary -= 1
+                    has_neighbour = True
                     break
-        assert boundary >= 0
-        if boundary > 0:
-            nodes.append(i)
-    for i in range(edges.shape[0]):
-        ed = edges[i]
-        if ed[0] in nodes or ed[1] in nodes:
-            links.append(i)
-    return np.array(nodes), np.array(links)
+            if not has_neighbour:
+                n = np.mean(points[t], axis=0)
+                n_i = len(vertices)
+                boundary_triangles.append(t)
+                vertices.append(n)
+                nodes.append(n_i)
+                edges.append([i, n_i])
+    for i in range(len(boundary_triangles)):
+        t = boundary_triangles[i]
+        n = nodes[i]
+        for j in range(len(boundary_triangles)):
+            if j >= i:
+                break
+            t2 = boundary_triangles[j]
+            n2 = nodes[j]
+            if sum(p in t for p in t2) == 2:
+                links.append([n, n2])
+        
+    return (np.array(boundary_triangles),
+            np.array(vertices), np.array(edges),
+            np.array(nodes), np.array(links),)
 
 
 def plot_vertices(
@@ -195,13 +223,20 @@ def plot_vertices(
     *,
     nodes: IArray,
     draw_ids: bool,
+    draw_only_boundary: bool,
 ) -> None:
     for i in range(vertices.shape[0]):
         x, y, z = vertices[i]
         if i in nodes:
             color = (.3, .3, 1)
+            label = f"n[{i}]"
+            alpha = 0.8
         else:
+            if draw_only_boundary:
+                continue
             color = "green"
+            label = f"v[{i}]"
+            alpha = 0.5
         ax.scatter(
             x, y, z,
             marker=".",
@@ -209,30 +244,44 @@ def plot_vertices(
             facecolor=color,
             edgecolor="black",
             picker=5,
+            alpha=alpha,
         )
         if draw_ids:
-            ax.text(x, y, z, f"v[{i}]")
+            ax.text(x, y, z, label)
 
 def plot_edges(
     vertices: FArray,
     edges: IArray,
     ax: Axes3D,
-    *,
-    links: IArray,
+    # *,
 ) -> None:
     for i in range(edges.shape[0]):
-        s = edges[i]
-        if i in links:
-            color = "green"
-        else:
-            color = "blue"
+        ed = edges[i]
+        color = "green"
         ax.plot3D(
-            vertices[s, 0], vertices[s, 1], vertices[s, 2], 
+            vertices[ed, 0], vertices[ed, 1], vertices[ed, 2], 
             linewidth=1,
             color=color,
             alpha=0.5,
         )
 
+def plot_links(
+    vertices: FArray,
+    links: IArray,
+    ax: Axes3D,
+    # *,
+) -> None:
+    for i in range(links.shape[0]):
+        l = links[i]
+        color = "blue"
+        ax.plot3D(
+            vertices[l, 0], vertices[l, 1], vertices[l, 2], 
+            linewidth=1,
+            color=color,
+            alpha=0.5,
+        )
+
+ViewingModes = Literal["all", "dual", "triangulation", "boundary"]
 
 @dataclass
 class State:
@@ -245,7 +294,7 @@ class State:
     draw_ids: bool
     draw_normals: bool
     draw_segment_vectors: bool
-    view_mode: Literal["all", "triangulation", "dual"]
+    view_mode: ViewingModes
 
     def calculate_triangles(self) -> IArray:
         triangles = []
@@ -305,9 +354,11 @@ def main() -> None:
     try:
         filename = sys.argv[1]
         print(f"Using filename: {filename}")
-        d = np.load(filename)
-        state.points = d["points"]
-        state.tetrahedra = d["tetrahedra"]
+        if os.path.exists(filename):
+            print(f"Loading filename: {filename}")
+            d = np.load(filename)
+            state.points = d["points"]
+            state.tetrahedra = d["tetrahedra"]
     except IndexError:
         filename = "triangulation.npz"
 
@@ -326,11 +377,16 @@ def main() -> None:
         # Highlight the selected point in red, others in blue
         vertices = calculate_vertices(state.points, state.tetrahedra)
         edges = calculate_edges(state.tetrahedra)
-        nodes, links = calculate_boundary_graph(edges, state.tetrahedra)
+        boundary_triangles, vertices, edges, nodes, links = \
+                calculate_boundary_graph(state.points, vertices, edges, state.tetrahedra)
                 
         if state.view_mode in ("all", "dual"):
-            plot_edges(vertices, edges, ax, links=links)
-            plot_vertices(vertices, ax, nodes=nodes, draw_ids=state.draw_ids)
+            plot_edges(vertices, edges, ax)
+            plot_links(vertices, links, ax)
+            plot_vertices(vertices, ax, nodes=nodes, draw_ids=state.draw_ids, draw_only_boundary=False)
+        elif state.view_mode == "boundary":
+            plot_links(vertices, links, ax)
+            plot_vertices(vertices, ax, nodes=nodes, draw_ids=state.draw_ids, draw_only_boundary=True)
 
         if state.view_mode in ("all", "triangulation"):
             plot_triangles(
@@ -338,20 +394,49 @@ def main() -> None:
                 draw_segment_vectors=state.draw_segment_vectors,
                 draw_normals=state.draw_normals,
                 draw_ids=state.draw_ids,
-                nodes=nodes,
-                tetrahedra=state.tetrahedra,
+                boundary_triangles=boundary_triangles,
+                draw_only_boundary=False,
             )
-            plot_segments(state.points, state.calculate_segments(), ax)
+            plot_segments(
+                state.points, state.calculate_segments(), ax,
+                boundary_triangles=boundary_triangles,
+                draw_only_boundary=False,
+            )
             state.scatter_collection = plot_points(
                 state.points, ax,
                 selected_idx=state.selected_point,
                 secondary_selection=state.secondary_selection,
                 draw_ids=state.draw_ids,
-                nodes=nodes,
-                tetrahedra=state.tetrahedra,
+                boundary_triangles=boundary_triangles,
+                draw_only_boundary=False,
+            )
+        elif state.view_mode in "boundary":
+            plot_triangles(
+                state.points, state.calculate_triangles(), ax,
+                draw_segment_vectors=state.draw_segment_vectors,
+                draw_normals=state.draw_normals,
+                draw_ids=state.draw_ids,
+                boundary_triangles=boundary_triangles,
+                draw_only_boundary=True,
+            )
+            plot_segments(
+                state.points, state.calculate_segments(), ax,
+                boundary_triangles=boundary_triangles,
+                draw_only_boundary=True,
+            )
+            state.scatter_collection = plot_points(
+                state.points, ax,
+                selected_idx=state.selected_point,
+                secondary_selection=state.secondary_selection,
+                draw_ids=state.draw_ids,
+                boundary_triangles=boundary_triangles,
+                draw_only_boundary=True,
             )
 
-        ax.text2D(0.05, 0.95, f"Selection Mode: {state.selection_mode}", transform=ax.transAxes)
+        ax.text2D(0.05, 1.00, 
+            f"Viewing Mode: {state.view_mode}\n"
+            f"Selection Mode: {state.selection_mode}",
+            transform=ax.transAxes)
         fig.canvas.draw_idle()
 
     def on_pick(event):
@@ -400,14 +485,12 @@ def main() -> None:
         elif event.key == 'I':
             state.draw_ids = not state.draw_ids
         elif event.key == 'V':
-            if state.view_mode == "all":
-                state.view_mode = "dual"
-            elif state.view_mode == "dual":
-                state.view_mode = "triangulation"
-            elif state.view_mode == "triangulation":
-                state.view_mode = "all"
-            else:
-                assert False, "Unreachable"
+            viewing_modes: List[ViewingModes] = [
+                    "all", "dual", "triangulation", "boundary"]
+            for i, v in enumerate(viewing_modes):
+                if state.view_mode == v:
+                    state.view_mode = viewing_modes[(i+1)%len(viewing_modes)]
+                    break
         elif event.key == 'G':
             np.savez(
                 filename,
